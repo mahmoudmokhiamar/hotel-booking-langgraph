@@ -39,7 +39,7 @@ returns polished Markdown with filters, bullet points, call-to-action.
 * User types feedback (e.g. “only 4-star hotels under ₹10 000”) or *all good*.
 
 7. **LLM routing**  
-GPT-4o reads the feedback via `decision_prompt` and outputs one of:  
+GPT-4.1 reads the feedback via `decision_prompt` and outputs one of:  
 * **search again** → start a brand-new search with new parameters.  
 * **rewrite existing results** → re-summarise the same list with filters applied.  
 * **end** → finish the conversation.
