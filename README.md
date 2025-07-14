@@ -7,7 +7,7 @@ HotelFinderis a **Streamlit web app** that demonstrates how to build an AI-drive
 | **User Interface** | **Streamlit** | Renders an interactive web form (location, dates, guests) and shows Markdown results + feedback box |
 | **Browsing / Scraping** | **Browserbase + Playwright** | Spins up a remote Chromium instance, opens a generated Kayak URL, and fetches the rendered HTML |
 | **LLM Orchestration** | **LangGraph** | Coordinates the agent workflow (search → summarise → collect feedback → reroute) in a stateful graph |
-| **Language Model** | **OpenAI GPT-4o** (via `langchain-openai`) | Summarises raw HTML into a clean hotel list and decides next steps based on user feedback |
+| **Language Model** | **OpenAI GPT-4.1** (via `langchain-openai`) | Summarises raw HTML into a clean hotel list and decides next steps based on user feedback |
 | **Data Schema & Validation** | **Pydantic** | Ensures structured inputs/outputs for LLM calls (search parameters, decision routing, etc.) |
 
 ---
@@ -53,11 +53,11 @@ LangGraph keeps a `HotelAgentSchema` object in memory, passing updated state (re
 
 | File | Purpose |
 |------|---------|
-| `app_langgraph.py` | Main Streamlit application |
+| `app_langgraph_openai.py` | Main Streamlit application |
 | `requirements.txt` | All Python dependencies. Install with:<br>`pip install -r requirements.txt` |
 | `.env` | Store your **Browserbase API key** and **project ID** here |
-| `assets/browser-base.png` | Logo shown in the sidebar (optional) |
-
+| `assets/browser-base.png` | Logo shown in the sidebar |
+| `utils.py` | contains extra needed utilty function such as generating the hotels url for browser base to scrape content, and regex to get hotel data|
 ---
 
 ## 3. Environment Variables
@@ -75,8 +75,8 @@ You can either put them in `.env` *or* enter the API key in the Streamlit sideba
 
 ```bash
 # 1. Clone / download the repo
-git clone https://github.com/your-username/hotelfinder-pro.git
-cd hotelfinder-pro
+git clone https://github.com/mahmoudmokhiamar/hotel-booking-langgraph.git
+cd hotel-booking-langgraph
 
 # 2. Create & activate a virtual environment
 python -m venv .venv
@@ -89,8 +89,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # 4. (Optional) add your Browserbase creds to .env
-echo "BROWSERBASE_API_KEY=sk-..."      >> .env
+echo "BROWSERBASE_API_KEY=bb-..."      >> .env
 echo "BROWSERBASE_PROJECT_ID=proj_..." >> .env
+echo "OPENAI_API_KEY=sk-..." >> .env
 
 # 5. Launch Streamlit
-streamlit run app_langgraph.py
+streamlit run app_langgraph_openai.py
