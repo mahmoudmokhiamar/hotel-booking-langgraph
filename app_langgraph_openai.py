@@ -1,25 +1,20 @@
-import re
 import os
-import asyncio
 import datetime
+from enum import Enum
 import nest_asyncio
 import streamlit as st
 from dotenv import load_dotenv
-from html2text import html2text
-from browserbase import browserbase
-from kayak import kayak_hotel_search
 from langgraph.constants import Send
 from pydantic import Field, BaseModel
 from langchain_openai import ChatOpenAI
-from playwright.async_api import async_playwright
 from langchain_core.messages import SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
+from streamlit.runtime.scriptrunner import StopException
 from langgraph.graph import MessagesState, START, END, StateGraph
+from utils import browserbase,kayak_hotel_search,extract_hotels_clean
 import sys, asyncio
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-
-
 
 # Page configuration
 st.set_page_config(page_title="🏨 HotelFinder Pro", layout="wide")
@@ -74,95 +69,31 @@ search_button = st.button("Search Hotels")
 
 nest_asyncio.apply()
 
-async def browserbase(url: str) -> str:
-    try:
-        async with async_playwright() as p:
-            print("Connecting to Browserbase...")
-            browser = await p.chromium.connect_over_cdp(
-                "wss://connect.browserbase.com?apiKey=" + os.environ["BROWSERBASE_API_KEY"] + "&projectId=" + os.environ["BROWSERBASE_PROJECT_ID"]
-            )
-            print("Connected to Browserbase.")
-            context = await browser.new_context()
-            page = await context.new_page()
-            print("Navigating to URL...")
-            await page.goto(url, timeout=60000)
-            print("Waiting for page load...")
-            await page.wait_for_load_state("networkidle", timeout=60000)
-            content = html2text(await page.content())
-            print("Page content retrieved.")
-            await browser.close()
-            return content
-    except Exception as e:
-        print(f"Error: {str(e)}")
-        return f"Error: {str(e)}"
+class DecisionOption(Enum):
+    search_again = "search again"
+    rewrite_existing_results = "rewrite existing results"
+    end = "end"
 
-def kayak_hotel_search(
-    location_query: str, check_in_date: str, check_out_date: str, num_adults: int = 2
-) -> str:
-    """
-    Generates a Kayak URL for hotel searches.
-    """
-    print(f"Generating Kayak Hotel URL for {location_query} from {check_in_date} to {check_out_date} for {num_adults} adults")
-    URL = f"https://www.kayak.co.in/hotels/{location_query}/{check_in_date}/{check_out_date}/{num_adults}adults"
-    return URL
-
-def extract_hotels_clean(text: str, max_hotels: int = 5) -> str:
-    """
-    Extracts a concise, readable hotel summary from raw Browserbase-Kayak output.
-    """
-    text = text[:70000]  # Truncate for safety
-
-    hotel_pattern = re.compile(
-        r"\[(.*?)\]\((/hotels/.*?)\).*?(\d\.\d)\s+([A-Za-z]+)\s+\((\d{2,6})\).*?(\d+)\s+stars",
-        re.DOTALL
-    )
-    price_pattern = re.compile(r"₹\s*([\d,]+)")
-
-    hotels = []
-    matches = list(hotel_pattern.finditer(text))
-
-    for match in matches[:max_hotels]:
-        name = match.group(1).strip()
-        link = "https://www.kayak.co.in" + match.group(2).strip()
-        score = match.group(3).strip()
-        rating_desc = match.group(4).strip()
-        reviews = match.group(5).strip()
-        stars = match.group(6).strip()
-
-        # Find the first price after this hotel match
-        following_text = text[match.end():match.end()+1000]  # Look ahead
-        price_match = price_pattern.search(following_text)
-        price = price_match.group(1) if price_match else "N/A"
-
-        hotel_summary = f"""
-### {name}
-- ⭐ {stars} stars | {score}/10 {rating_desc} ({reviews} reviews)
-- 💲 Price from: ₹{price}
-- 🔗 [View Deal]({link})
-"""
-        hotels.append(hotel_summary.strip())
-
-    if not hotels:
-        return "⚠️ No hotels found in the extracted data."
-
-    return "\n\n".join(hotels)
-
+class DecisionResponse(BaseModel):
+    decision: DecisionOption
 
 class HotelSearchSchema(BaseModel):
-  location:str
-  check_in_date:str
-  check_out_date:str
-  num_adults:int
+    """Structured parameters for a brand-new hotel search."""
+    location: str = Field(description="Destination, e.g. 'Cairo, Egypt'")
+    check_in_date: str = Field(description="YYYY-MM-DD")
+    check_out_date: str = Field(description="YYYY-MM-DD")
+    num_adults: int = Field(ge=1, description="Number of adult guests")
 
 class HotelAgentSchema(MessagesState):
-  location:str
-  check_in_date:str
-  check_out_date:str
-  num_adults:int
-  hotel_results: str
-  markdown_results: str
-  feedback:str
-  filters:list[str] = Field(default_factory=list)
+    """All state carried through the LangGraph workflow."""
+    location: str
+    check_in_date: str
+    check_out_date: str
+    num_adults: int
+    hotel_results: str
+    markdown_results: str
+    feedback: str
+    filters: list[str] = Field(default_factory=list)
 
 llm = ChatOpenAI(model="gpt-4.1", temperature=0)
 
@@ -299,7 +230,7 @@ parameters_prompt = """
 
 
 
-async def search_for_hotels(state: dict):
+async def search_for_hotels(state: HotelSearchSchema):
     print(f"Searching for hotels in {state['location']} from {state['check_in_date']} to {state['check_out_date']} for {state['num_adults']} adults")
 
     request = kayak_hotel_search(
@@ -311,8 +242,6 @@ async def search_for_hotels(state: dict):
 
     hotel_results = await browserbase(request)
     hotel_results = extract_hotels_clean(hotel_results)
-    print(hotel_results)
-
     return {"hotel_results": hotel_results}
 
 
@@ -327,49 +256,52 @@ def summarize_hotels(state: dict):
     )
     output = llm.invoke([SystemMessage(content=prompt)] + state['messages'])
     return {"markdown_results": output.content}
+
 def human_feedback(state: HotelAgentSchema):
-    st.markdown(state['markdown_results'])
+    st.markdown(state["markdown_results"])
     choice = input("If you approve the current results or want to end the search, type **all good**.\nOtherwise, provide feedback to adjust the search:\n")
-    # choice = "all good"
     return {"feedback": choice}
 
+
+
 def route(state: HotelAgentSchema):
-    decision_output = llm.invoke([
-        SystemMessage(content=decision_prompt.format(feedback=state['feedback']))
-    ] + state['messages'])
+    decision_resp: DecisionResponse = (
+        llm.with_structured_output(DecisionResponse)
+           .invoke(
+               [SystemMessage(content=decision_prompt.format(feedback=state["feedback"]))
+               ] + state["messages"]
+           )
+    )
 
-    decision = decision_output.content.strip().lower()
-
-    if "end" in decision:
+    decision = decision_resp.decision
+    if decision is DecisionOption.end:
         return END
 
-    elif "search again" in decision:
-      structured_llm = llm.with_structured_output(HotelSearchSchema)
-      parameters_output = structured_llm.invoke([
-          SystemMessage(content=parameters_prompt.format(feedback=state['feedback']))
-      ])
-      filters_output = llm.invoke([
-            SystemMessage(content=filters_prompt.format(feedback=state['feedback']))
-        ])
-      state['filters'] = filters_output.content.strip().split("\n")
-
-      updates = parameters_output.model_dump()
-
-      return Send("hotel_search_agent", {
-            "location": parameters_output.location if parameters_output.location else state['location'],
-            "check_in_date": parameters_output.check_in_date if parameters_output.check_in_date else state['check_in_date'],
-            "check_out_date": parameters_output.check_out_date if parameters_output.check_out_date else state['check_out_date'],
-            "num_adults": parameters_output.num_adults if parameters_output.num_adults else state['num_adults'],
-      })
-
-
-
-    else:
+    if decision is DecisionOption.search_again:
+        params: HotelSearchSchema = (
+            llm.with_structured_output(HotelSearchSchema)
+               .invoke([SystemMessage(content=parameters_prompt.format(feedback=state["feedback "]))])
+        )
         filters_output = llm.invoke([
-            SystemMessage(content=filters_prompt.format(feedback=state['feedback']))
+            SystemMessage(content=filters_prompt.format(feedback=state["feedback"]))
         ])
-        state['filters'] = filters_output.content.strip().split("\n")
-        return "hotel_results_showcaser"
+        state["filters"] = filters_output.content.strip().split("\n")
+
+        return Send(
+            "hotel_search_agent",
+            {
+                "location":      params.location      or state["location"],
+                "check_in_date": params.check_in_date or state["check_in_date"],
+                "check_out_date":params.check_out_date or state["check_out_date"],
+                "num_adults":    params.num_adults    or state["num_adults"],
+            },
+        )
+
+    filters_output = llm.invoke([
+        SystemMessage(content=filters_prompt.format(feedback=state["feedback"]))
+    ])
+    state["filters"] = filters_output.content.strip().split("\n")
+    return "hotel_results_showcaser"
 
 
 builder = StateGraph(HotelAgentSchema)
@@ -407,14 +339,16 @@ if search_button:
     elif check_out_date <= check_in_date:
         st.error("Check-out date must be after check-in date!")
     else:
-        with st.spinner("Searching for hotels... This may take a few minutes."):
+        with st.spinner("Searching for hotels…"):
             try:
                 result = asyncio.get_event_loop().run_until_complete(run_search())
                 st.success("Search completed!")
                 st.markdown("## Hotel Results")
                 st.markdown(result["markdown_results"])
+            except StopException:
+                st.stop()
             except Exception as e:
-                st.error(f"An error occurred during the search: {str(e)}")
+                st.error(f"An unexpected error occurred: {e}")
 
 
 st.markdown("---")
